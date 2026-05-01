@@ -45,9 +45,15 @@ Inside the payload, each field is laid out in declaration order:
 | `bool` | 1 byte (`0` = false, `1` = true) |
 | `String` | `u32` BE length + UTF-8 bytes |
 | `Vec<T>` | `u32` BE element count + each `T` |
+| `HashSet<T>`, `BTreeSet<T>` | `u32` BE element count + each `T` |
+| `HashMap<K, V>`, `BTreeMap<K, V>` | `u32` BE entry count + each `(K, V)` pair |
 | `Option<T>` | 1-byte tag (`0` = None, `1` = Some) + `T` if Some |
 | Nested `#[derive(Codec)]` struct | its own length-prefixed encoding |
 | `#[derive(Codec)]` enum | 1-byte variant tag + variant fields (see below) |
+
+> **⚠️ Hash collection determinism**
+>
+> `HashMap` and `HashSet` iterate in non-deterministic order, so encoding the same logical value twice can produce **different byte sequences**. Round-trips and `==` comparisons still work. If you hash, checksum, dedupe, or diff the wire bytes, use `BTreeMap` / `BTreeSet` — they iterate in sorted order and produce stable output.
 
 ### Enums
 
@@ -70,7 +76,7 @@ All three variant kinds (unit, tuple, struct) are supported. Limit: up to 256 va
 
 ## Supported field types
 
-Path types only: the primitives above, `String`, `Vec<T>`, `Option<T>`, and any other type implementing `Codec` (including enums and nested structs).
+Path types only: the primitives above, `String`, `Vec<T>`, `HashSet<T>`, `BTreeSet<T>`, `HashMap<K, V>`, `BTreeMap<K, V>`, `Option<T>`, and any other type implementing `Codec` (including enums and nested structs).
 
 References, tuples, fixed-size arrays, and generics on the deriving type are not supported. Empty enums and unit / tuple structs cannot derive `Codec`.
 

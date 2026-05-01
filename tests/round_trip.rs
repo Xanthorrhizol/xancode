@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use xancode::Codec;
 
 fn round_trip<T: Codec + std::fmt::Debug + PartialEq>(value: T)
@@ -460,6 +461,78 @@ fn enum_variant_with_nested_struct() {
             Item { id: 20, name: "y".into() },
         ],
     });
+}
+
+#[derive(Codec, Debug, PartialEq)]
+struct Sets {
+    h: HashSet<u32>,
+    b: BTreeSet<String>,
+}
+
+#[test]
+fn sets_filled() {
+    let mut h = HashSet::new();
+    h.insert(1);
+    h.insert(2);
+    h.insert(u32::MAX);
+    let mut b = BTreeSet::new();
+    b.insert("alpha".to_string());
+    b.insert("beta".to_string());
+    b.insert(String::new());
+    round_trip(Sets { h, b });
+}
+
+#[test]
+fn sets_empty() {
+    round_trip(Sets {
+        h: HashSet::new(),
+        b: BTreeSet::new(),
+    });
+}
+
+#[derive(Codec, Debug, PartialEq)]
+struct Maps {
+    h: HashMap<String, i64>,
+    b: BTreeMap<u32, Vec<bool>>,
+}
+
+#[test]
+fn maps_filled() {
+    let mut h = HashMap::new();
+    h.insert("a".to_string(), 1);
+    h.insert("b".to_string(), -2);
+    h.insert("c".to_string(), i64::MAX);
+    let mut b = BTreeMap::new();
+    b.insert(10u32, vec![true, false]);
+    b.insert(20u32, vec![]);
+    b.insert(30u32, vec![false, false, true]);
+    round_trip(Maps { h, b });
+}
+
+#[test]
+fn maps_empty() {
+    round_trip(Maps {
+        h: HashMap::new(),
+        b: BTreeMap::new(),
+    });
+}
+
+#[derive(Codec, Debug, PartialEq)]
+struct Mapped {
+    by_id: HashMap<u32, Item>,
+    sorted: BTreeMap<String, Action>,
+}
+
+#[test]
+fn maps_with_codec_value() {
+    let mut by_id = HashMap::new();
+    by_id.insert(1, Item { id: 1, name: "one".into() });
+    by_id.insert(42, Item { id: 42, name: "answer".into() });
+    let mut sorted = BTreeMap::new();
+    sorted.insert("first".to_string(), Action::Quit);
+    sorted.insert("second".to_string(), Action::Move(3, 4));
+    sorted.insert("third".to_string(), Action::Say("hi".into()));
+    round_trip(Mapped { by_id, sorted });
 }
 
 #[test]

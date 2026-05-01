@@ -265,6 +265,36 @@ fn encode_for_type(expr: TokenStream2, ty: &Type) -> syn::Result<TokenStream2> {
                 }
             }
         }
+        "HashSet" | "BTreeSet" => {
+            let inner = extract_single_generic(&last.arguments)?;
+            let inner_encode = encode_for_type(quote!((*__elem)), inner)?;
+            quote! {
+                {
+                    let __set = &#expr;
+                    let __count = __set.len() as u32;
+                    buf.extend_from_slice(&__count.to_be_bytes());
+                    for __elem in __set.iter() {
+                        #inner_encode
+                    }
+                }
+            }
+        }
+        "HashMap" | "BTreeMap" => {
+            let (k_ty, v_ty) = extract_two_generics(&last.arguments)?;
+            let k_encode = encode_for_type(quote!((*__k)), k_ty)?;
+            let v_encode = encode_for_type(quote!((*__v)), v_ty)?;
+            quote! {
+                {
+                    let __map = &#expr;
+                    let __count = __map.len() as u32;
+                    buf.extend_from_slice(&__count.to_be_bytes());
+                    for (__k, __v) in __map.iter() {
+                        #k_encode
+                        #v_encode
+                    }
+                }
+            }
+        }
         "Option" => {
             let inner = extract_single_generic(&last.arguments)?;
             let inner_encode = encode_for_type(quote!((*__inner)), inner)?;
@@ -385,6 +415,49 @@ fn decode_for_type(ty: &Type) -> syn::Result<TokenStream2> {
                 }
             }
         }
+        "HashSet" | "BTreeSet" => {
+            let inner = extract_single_generic(&last.arguments)?;
+            let inner_decode = decode_for_type(inner)?;
+            quote! {
+                {
+                    if pos + 4 > data.len() {
+                        return ::std::result::Result::Err("unexpected EOF while decoding Set length".into());
+                    }
+                    let __count = u32::from_be_bytes(
+                        (&data[pos..pos + 4]).try_into()?,
+                    ) as usize;
+                    pos += 4;
+                    let mut __set = <#ty>::new();
+                    for _ in 0..__count {
+                        __set.insert(#inner_decode);
+                    }
+                    __set
+                }
+            }
+        }
+        "HashMap" | "BTreeMap" => {
+            let (k_ty, v_ty) = extract_two_generics(&last.arguments)?;
+            let k_decode = decode_for_type(k_ty)?;
+            let v_decode = decode_for_type(v_ty)?;
+            quote! {
+                {
+                    if pos + 4 > data.len() {
+                        return ::std::result::Result::Err("unexpected EOF while decoding Map length".into());
+                    }
+                    let __count = u32::from_be_bytes(
+                        (&data[pos..pos + 4]).try_into()?,
+                    ) as usize;
+                    pos += 4;
+                    let mut __map = <#ty>::new();
+                    for _ in 0..__count {
+                        let __k = #k_decode;
+                        let __v = #v_decode;
+                        __map.insert(__k, __v);
+                    }
+                    __map
+                }
+            }
+        }
         "Option" => {
             let inner = extract_single_generic(&last.arguments)?;
             let inner_decode = decode_for_type(inner)?;
@@ -429,6 +502,32 @@ fn decode_for_type(ty: &Type) -> syn::Result<TokenStream2> {
         }
     };
     Ok(tokens)
+}
+
+fn extract_two_generics(args: &PathArguments) -> syn::Result<(&Type, &Type)> {
+    let PathArguments::AngleBracketed(ab) = args else {
+        return Err(syn::Error::new_spanned(
+            args,
+            "expected exactly two angle-bracketed type arguments (e.g. HashMap<K, V>)",
+        ));
+    };
+    let mut types = ab.args.iter().filter_map(|a| match a {
+        GenericArgument::Type(t) => Some(t),
+        _ => None,
+    });
+    let first = types
+        .next()
+        .ok_or_else(|| syn::Error::new_spanned(ab, "expected exactly two type arguments"))?;
+    let second = types
+        .next()
+        .ok_or_else(|| syn::Error::new_spanned(ab, "expected exactly two type arguments"))?;
+    if types.next().is_some() {
+        return Err(syn::Error::new_spanned(
+            ab,
+            "expected exactly two type arguments",
+        ));
+    }
+    Ok((first, second))
 }
 
 fn extract_single_generic(args: &PathArguments) -> syn::Result<&Type> {
