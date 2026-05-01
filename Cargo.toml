@@ -15,4 +15,4 @@ resolver = "3"
 
 [dependencies]
 bytes = "1"
-xancode_macros = { path = "macros", version = "0.1.0" }
+xancode_macros = { path = "macros", version = "0.1.1" }
