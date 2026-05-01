@@ -1,7 +1,10 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
-use syn::{Data, DeriveInput, Fields, GenericArgument, PathArguments, Type, parse_macro_input};
+use quote::{format_ident, quote};
+use syn::{
+    Data, DataEnum, DataStruct, DeriveInput, Fields, GenericArgument, PathArguments, Type,
+    parse_macro_input,
+};
 
 #[proc_macro_derive(Codec)]
 pub fn derive_codec(input: TokenStream) -> TokenStream {
@@ -14,32 +17,53 @@ pub fn derive_codec(input: TokenStream) -> TokenStream {
 fn derive_codec_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
     let name = &input.ident;
 
-    let fields = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(f) => &f.named,
-            Fields::Unnamed(f) => {
-                return Err(syn::Error::new_spanned(
-                    f,
-                    "Codec can only be derived for structs with named fields",
-                ));
-            }
-            Fields::Unit => {
-                return Err(syn::Error::new_spanned(
-                    &input.ident,
-                    "Codec cannot be derived for unit structs",
-                ));
-            }
-        },
-        Data::Enum(e) => {
-            return Err(syn::Error::new_spanned(
-                &e.enum_token,
-                "Codec can only be derived for structs, not enums",
-            ));
-        }
+    let (encode_body, decode_body) = match &input.data {
+        Data::Struct(data) => struct_bodies(&input, data)?,
+        Data::Enum(data) => enum_bodies(&input, data)?,
         Data::Union(u) => {
             return Err(syn::Error::new_spanned(
                 &u.union_token,
-                "Codec can only be derived for structs, not unions",
+                "Codec can only be derived for structs and enums, not unions",
+            ));
+        }
+    };
+
+    Ok(quote! {
+        impl ::xancode::Codec for #name {
+            type Error = ::std::boxed::Box<dyn ::std::error::Error>;
+
+            fn encode(&self) -> ::xancode::Bytes {
+                let mut buf: ::std::vec::Vec<u8> = ::std::vec![0u8; 4]; // length placeholder
+                #encode_body
+                let len = (buf.len() - 4) as u32;
+                buf[0..4].copy_from_slice(&len.to_be_bytes());
+                ::xancode::Bytes::from(buf)
+            }
+
+            fn decode(data: &::xancode::Bytes) -> ::std::result::Result<Self, Self::Error> {
+                let mut pos = 4usize; // skip length
+                #decode_body
+            }
+        }
+    })
+}
+
+fn struct_bodies(
+    input: &DeriveInput,
+    data: &DataStruct,
+) -> syn::Result<(TokenStream2, TokenStream2)> {
+    let fields = match &data.fields {
+        Fields::Named(f) => &f.named,
+        Fields::Unnamed(f) => {
+            return Err(syn::Error::new_spanned(
+                f,
+                "Codec can only be derived for structs with named fields",
+            ));
+        }
+        Fields::Unit => {
+            return Err(syn::Error::new_spanned(
+                &input.ident,
+                "Codec cannot be derived for unit structs",
             ));
         }
     };
@@ -61,24 +85,136 @@ fn derive_codec_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
         })
         .collect::<syn::Result<Vec<_>>>()?;
 
-    Ok(quote! {
-        impl ::xancode::Codec for #name {
-            type Error = ::std::boxed::Box<dyn ::std::error::Error>;
+    Ok((
+        quote! { #(#encode_stmts)* },
+        quote! { ::std::result::Result::Ok(Self { #(#decode_stmts,)* }) },
+    ))
+}
 
-            fn encode(&self) -> ::xancode::Bytes {
-                let mut buf: ::std::vec::Vec<u8> = ::std::vec![0u8; 4]; // length placeholder
-                #(#encode_stmts)*
-                let len = (buf.len() - 4) as u32;
-                buf[0..4].copy_from_slice(&len.to_be_bytes());
-                ::xancode::Bytes::from(buf)
+fn enum_bodies(
+    input: &DeriveInput,
+    data: &DataEnum,
+) -> syn::Result<(TokenStream2, TokenStream2)> {
+    if data.variants.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input.ident,
+            "Codec cannot be derived for empty enums",
+        ));
+    }
+    if data.variants.len() > 256 {
+        return Err(syn::Error::new_spanned(
+            &input.ident,
+            format!(
+                "Codec supports at most 256 enum variants (got {})",
+                data.variants.len()
+            ),
+        ));
+    }
+
+    let mut encode_arms = Vec::new();
+    let mut decode_arms = Vec::new();
+
+    for (idx, variant) in data.variants.iter().enumerate() {
+        let tag = idx as u8;
+        let vname = &variant.ident;
+
+        match &variant.fields {
+            Fields::Unit => {
+                encode_arms.push(quote! {
+                    Self::#vname => { buf.push(#tag); }
+                });
+                decode_arms.push(quote! {
+                    #tag => ::std::result::Result::Ok(Self::#vname),
+                });
             }
-
-            fn decode(data: &::xancode::Bytes) -> ::std::result::Result<Self, Self::Error> {
-                let mut pos = 4usize; // skip length
-                ::std::result::Result::Ok(Self { #(#decode_stmts,)* })
+            Fields::Unnamed(fields) => {
+                let bindings: Vec<_> = (0..fields.unnamed.len())
+                    .map(|i| format_ident!("__f{}", i))
+                    .collect();
+                let encode_each = fields
+                    .unnamed
+                    .iter()
+                    .zip(&bindings)
+                    .map(|(f, b)| encode_for_type(quote!((*#b)), &f.ty))
+                    .collect::<syn::Result<Vec<_>>>()?;
+                let decode_each = fields
+                    .unnamed
+                    .iter()
+                    .zip(&bindings)
+                    .map(|(f, b)| -> syn::Result<TokenStream2> {
+                        let decode = decode_for_type(&f.ty)?;
+                        Ok(quote! { let #b = #decode; })
+                    })
+                    .collect::<syn::Result<Vec<_>>>()?;
+                encode_arms.push(quote! {
+                    Self::#vname(#(#bindings),*) => {
+                        buf.push(#tag);
+                        #(#encode_each)*
+                    }
+                });
+                decode_arms.push(quote! {
+                    #tag => {
+                        #(#decode_each)*
+                        ::std::result::Result::Ok(Self::#vname(#(#bindings),*))
+                    },
+                });
+            }
+            Fields::Named(fields) => {
+                let names: Vec<_> = fields
+                    .named
+                    .iter()
+                    .map(|f| f.ident.clone().expect("named field has ident"))
+                    .collect();
+                let encode_each = fields
+                    .named
+                    .iter()
+                    .zip(&names)
+                    .map(|(f, n)| encode_for_type(quote!((*#n)), &f.ty))
+                    .collect::<syn::Result<Vec<_>>>()?;
+                let decode_each = fields
+                    .named
+                    .iter()
+                    .zip(&names)
+                    .map(|(f, n)| -> syn::Result<TokenStream2> {
+                        let decode = decode_for_type(&f.ty)?;
+                        Ok(quote! { let #n = #decode; })
+                    })
+                    .collect::<syn::Result<Vec<_>>>()?;
+                encode_arms.push(quote! {
+                    Self::#vname { #(#names),* } => {
+                        buf.push(#tag);
+                        #(#encode_each)*
+                    }
+                });
+                decode_arms.push(quote! {
+                    #tag => {
+                        #(#decode_each)*
+                        ::std::result::Result::Ok(Self::#vname { #(#names),* })
+                    },
+                });
             }
         }
-    })
+    }
+
+    let encode_body = quote! {
+        match self {
+            #(#encode_arms)*
+        }
+    };
+    let decode_body = quote! {
+        if pos + 1 > data.len() {
+            return ::std::result::Result::Err("unexpected EOF reading enum tag".into());
+        }
+        let __tag = data[pos];
+        pos += 1;
+        match __tag {
+            #(#decode_arms)*
+            __other => ::std::result::Result::Err(
+                ::std::format!("invalid enum tag: {}", __other).into(),
+            ),
+        }
+    };
+    Ok((encode_body, decode_body))
 }
 
 fn encode_for_type(expr: TokenStream2, ty: &Type) -> syn::Result<TokenStream2> {

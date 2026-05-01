@@ -315,6 +315,164 @@ fn invalid_option_tag_fails() {
     );
 }
 
+#[derive(Codec, Debug, PartialEq)]
+enum Status {
+    Idle,
+    Running,
+    Failed,
+}
+
+#[test]
+fn enum_unit_variants() {
+    round_trip(Status::Idle);
+    round_trip(Status::Running);
+    round_trip(Status::Failed);
+}
+
+#[derive(Codec, Debug, PartialEq)]
+enum Action {
+    Quit,
+    Move(i32, i32),
+    Say(String),
+}
+
+#[test]
+fn enum_tuple_variants() {
+    round_trip(Action::Quit);
+    round_trip(Action::Move(-5, 12));
+    round_trip(Action::Say("hello".into()));
+}
+
+#[derive(Codec, Debug, PartialEq)]
+enum Event {
+    Tick,
+    Click { x: i32, y: i32 },
+    Resize { w: u32, h: u32, scale: f32 },
+}
+
+#[test]
+fn enum_struct_variants() {
+    round_trip(Event::Tick);
+    round_trip(Event::Click { x: 10, y: 20 });
+    round_trip(Event::Resize { w: 800, h: 600, scale: 1.5 });
+}
+
+#[derive(Codec, Debug, PartialEq)]
+enum Mixed3 {
+    Off,
+    On(bool),
+    Custom { brightness: u8, color: String },
+}
+
+#[test]
+fn enum_mixed_variants() {
+    round_trip(Mixed3::Off);
+    round_trip(Mixed3::On(true));
+    round_trip(Mixed3::Custom {
+        brightness: 200,
+        color: "warm white".into(),
+    });
+}
+
+#[derive(Codec, Debug, PartialEq)]
+struct EnumHolder {
+    id: u32,
+    action: Action,
+    history: Vec<Action>,
+    last: Option<Event>,
+}
+
+#[test]
+fn enum_in_struct() {
+    round_trip(EnumHolder {
+        id: 7,
+        action: Action::Move(1, 2),
+        history: vec![
+            Action::Quit,
+            Action::Say("bye".into()),
+            Action::Move(0, 0),
+        ],
+        last: Some(Event::Click { x: 5, y: 5 }),
+    });
+    round_trip(EnumHolder {
+        id: 0,
+        action: Action::Quit,
+        history: vec![],
+        last: None,
+    });
+}
+
+#[derive(Codec, Debug, PartialEq)]
+enum Bag {
+    Empty,
+    Items(Vec<u32>),
+    Tagged { name: String, values: Vec<i64> },
+    Maybe(Option<String>),
+    NestedVec(Vec<Vec<bool>>),
+}
+
+#[test]
+fn enum_variant_with_vec() {
+    round_trip(Bag::Empty);
+    round_trip(Bag::Items(vec![1, 2, 3, u32::MAX]));
+    round_trip(Bag::Items(vec![]));
+    round_trip(Bag::Tagged {
+        name: "scores".into(),
+        values: vec![-1, 0, i64::MAX, i64::MIN],
+    });
+    round_trip(Bag::Maybe(Some("present".into())));
+    round_trip(Bag::Maybe(None));
+    round_trip(Bag::NestedVec(vec![
+        vec![true, false],
+        vec![],
+        vec![false, false, true],
+    ]));
+}
+
+#[derive(Codec, Debug, PartialEq)]
+struct Item {
+    id: u32,
+    name: String,
+}
+
+#[derive(Codec, Debug, PartialEq)]
+enum Container {
+    Empty,
+    Single(Item),
+    Many(Vec<Item>),
+    Filtered { active: bool, items: Vec<Item> },
+}
+
+#[test]
+fn enum_variant_with_nested_struct() {
+    round_trip(Container::Empty);
+    round_trip(Container::Single(Item { id: 1, name: "one".into() }));
+    round_trip(Container::Many(vec![
+        Item { id: 1, name: "a".into() },
+        Item { id: 2, name: "b".into() },
+        Item { id: 3, name: "c".into() },
+    ]));
+    round_trip(Container::Many(vec![]));
+    round_trip(Container::Filtered {
+        active: true,
+        items: vec![
+            Item { id: 10, name: "x".into() },
+            Item { id: 20, name: "y".into() },
+        ],
+    });
+}
+
+#[test]
+fn invalid_enum_tag_fails() {
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(&0u32.to_be_bytes());
+    buf.push(99u8); // bogus variant tag (Status only has 0..=2)
+    let len = (buf.len() - 4) as u32;
+    buf[0..4].copy_from_slice(&len.to_be_bytes());
+    let bytes = xancode::Bytes::from(buf);
+    assert!(Status::decode(&bytes).is_err());
+}
+
 #[test]
 fn truncated_payload_fails() {
     // Header claims more bytes than actually present.

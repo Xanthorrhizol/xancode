@@ -48,11 +48,33 @@ Inside the payload, each field is laid out in declaration order:
 | `Vec<T>` | `u32` BE element count + each `T` |
 | `Option<T>` | 1-byte tag (`0` = None, `1` = Some) + `T` if Some |
 | Nested `#[derive(Codec)]` struct | its own length-prefixed encoding |
+| `#[derive(Codec)]` enum | 1-byte variant tag + variant fields (see below) |
+
+### Enums
+
+`Codec` can be derived on enums. Variants are tagged by their declaration order (`0`, `1`, `2`, ...) as a single `u8`, followed by the variant's fields encoded in order:
+
+```rust
+#[derive(Codec)]
+enum Event {
+    Tick,                                 // tag 0, no payload
+    Click { x: i32, y: i32 },             // tag 1, then x, then y
+    Resize(u32, u32),                     // tag 2, then both u32s
+}
+```
+
+All three variant kinds (unit, tuple, struct) are supported. Limit: up to 256 variants per enum.
+
+> **⚠️ Wire stability**
+>
+> Variant tags are **positional**, not based on Rust's discriminant values or variant names. **Reordering variants, removing one, or inserting a non-trailing variant breaks compatibility with already-serialized data.** Treat the variant list as an append-only schema once it's in the wild.
 
 ## Supported field types
 
-Path types only: the primitives above, `String`, `Vec<T>`, `Option<T>`, and any other type implementing `Codec`. References, tuples, fixed-size arrays, and generics on the deriving struct are not supported.
+Path types only: the primitives above, `String`, `Vec<T>`, `Option<T>`, and any other type implementing `Codec` (including enums and nested structs).
+
+References, tuples, fixed-size arrays, and generics on the deriving type are not supported. Empty enums and unit / tuple structs cannot derive `Codec`.
 
 ## Errors
 
-`encode` always succeeds. `decode` returns `Result<Self, Box<dyn Error>>` and errors on truncated input, invalid `Option` tags, invalid `bool` values, or invalid UTF-8.
+`encode` always succeeds. `decode` returns `Result<Self, Box<dyn Error>>` and errors on truncated input, invalid `Option` tags, unknown enum tags, invalid `bool` values, or invalid UTF-8.
