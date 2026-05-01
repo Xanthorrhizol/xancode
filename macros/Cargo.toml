@@ -1,0 +1,17 @@
+[package]
+name = "xancode_macros"
+version = "0.1.0"
+edition = "2024"
+authors = ["Xanthorrhizol <xanthorrhizol@proton.me>"]
+description = "My simple encoder - macros"
+repository = "https://github.com/Xanthorrhizol/xancode"
+license = "MIT"
+keywords = ["encoder", "encode", "decode", "codec"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
